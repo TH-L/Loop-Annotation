@@ -2,7 +2,6 @@
 
 **Version:** 1.0  
 **Author:** Luis Tenorio Hernández
-**Class:** Programación y Análisis de Datos Usando Python 
 **Date:** May 2025
 
 ---
