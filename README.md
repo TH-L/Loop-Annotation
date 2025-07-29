@@ -28,7 +28,7 @@
 This script takes a BEDPE file of chromatin loops and annotates each loop anchor with genomic features found in a directory of coordinate files. Supported coordinate formats include:
 - BED (e.g., peaks, DHS, ChIP-seq peaks)  
 - BEDGRAPH (e.g., signal tracks)
-- GTF (to extract gene promoters (TSS +/- 1kb))  
+- GTF (to extract gene promoters (TSS +/- 1kb by Default))  
 
 Optionally, in addition to the GTF file you can specify a file with the extension:
 - COUNT.CSV (e.g., gene counts in different conditions from RNA-seq)
