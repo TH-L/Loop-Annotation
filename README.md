@@ -1,8 +1,8 @@
 # Annotate BEDPE Loop Anchors with Genomic Features
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Author:** Luis Tenorio Hernández
-**Date:** May 2025
+**Date:** July 2025
 
 ---
 
