@@ -1,3 +1,4 @@
+# Loop annotation version 2.0 
 # This script annotates BEDPE Loop Anchors with Genomic Features.
 
 import argparse  # To parse command-line arguments 
@@ -59,15 +60,15 @@ def write_anchor_bed(df, path):
 
 # This function writes a DataFrame of promoters to a BED file if it doesn't exist
 # Arguments:
-#   Prom_df: DataFrame with ['chr','start','end','gene_name']
+#   prom_df: DataFrame with ['chr','start','end','gene_name']
 #   path: Path for output promoter BED
-def write_Prom_bed(Prom_df, path):
+def write_prom_bed(prom_df, path):
     if path.exists():
-        print(f"Prom BED already exists: {path}")
+        print(f"prom BED already exists: {path}")
     else:
-        print(f"Writing Promoters BED to: {path}")
+        print(f"Writing promoters BED to: {path}")
         # Include gene_name as a 4th column for feature labeling
-        Prom_df[['chr','start','end','gene_name']].to_csv(path, sep='\t', header=False, index=False)
+        prom_df[['chr','start','end','gene_name']].to_csv(path, sep='\t', header=False, index=False)
 
 
 # This function counts overlaps between anchors and another coordinate file,
@@ -104,11 +105,12 @@ def write_average_bedgraph(average_df, path):
 # defining a +/- 1kb window around transcript start sites.
 # Arguments:
 #   gtf_path: path to GTF annotation file
+#   prom_window: flank size around the TSS to define a promoter, Default: 1000 bp
 # Returns:
 #   DataFrame with promoter coordinates and gene names
-def gtf_to_Prom_df(gtf_path):
-    print(f"Extracting Prom from GTF: {gtf_path}")
-    Proms = []  # List to hold promoter tuples
+def gtf_to_prom_df(gtf_path, prom_window):
+    print(f"Extracting promoters from GTF: {gtf_path}")
+    proms = []  # List to hold promoter tuples
     with open(gtf_path) as f:
         for l in f:
             if l.startswith('#'):  # Skip header/comment lines
@@ -133,19 +135,19 @@ def gtf_to_Prom_df(gtf_path):
             gene = attrs.get('gene_name') or attrs.get('gene_id')
             try:
                 # Determine promoter window based on strand:
-                # For '+' strand, promoter initial position is 1kb upstream of transcript 'start' coordinate
-                # For '-' strand, promoter initial position is 1kb upstream of transcript 'end' coordinate
+                # For '+' strand, promoter initial position is 1kb (Default) upstream of transcript 'start' coordinate
+                # For '-' strand, promoter initial position is 1kb (Default) upstream of transcript 'end' coordinate
                 if cols[6] == '+':
-                    init_pos = int(cols[3]) - 1000
+                    init_pos = max(0, int(cols[3]) - prom_window)
                 else:
-                    init_pos = int(cols[4]) - 1000
-                # Define promoter as 1kb window
-                Proms.append((cols[0], init_pos, init_pos + 1000, gene))
+                    init_pos = max(0,int(cols[4]) - prom_window)
+                # Define promoter as +/- 1kb (Default) window
+                proms.append((cols[0], init_pos, init_pos + (prom_window*2), gene))
             except ValueError:
                 # Skip entries with invalid coordinates
                 continue
     # Create DataFrame for promoters
-    df = pd.DataFrame(Proms, columns=['chr','start','end','gene_name'])
+    df = pd.DataFrame(proms, columns=['chr','start','end','gene_name'])
     return df
 
 
@@ -158,9 +160,13 @@ def gtf_to_Prom_df(gtf_path):
 # Returns:
 #   DataFrame combining specified columns from both inputs
 def run_intersect(a_path, b_path, flags, a_cols, b_cols):
-    print(f"Intersect: -a {a_path} -b {b_path} {' '.join(flags)}")
-    cmd = ['bedtools','intersect','-a',a_path,'-b',b_path] + flags
-    # Execute the command and capture stdout for parsing
+    #print(f"Intersect: -a {a_path} -b {b_path} {' '.join(flags)}")
+    try:
+        cmd = ['bedtools','intersect','-a',a_path,'-b',b_path] + flags
+        # Execute the command and capture stdout for parsing
+    except subprocess.CalledProcessError as e:
+        SystemError.stderr.write(f"ERROR running bedtools on {b_path.name}:\n{e.stderr}\n")
+        exit
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     # Read the output into a DataFrame with no header, assign custom column names
     df = pd.read_csv(io.StringIO(result.stdout), sep='\t', header=None,
@@ -187,8 +193,9 @@ def make_annotated_paired_df(result):
 #   bedpe_file: input BEDPE path
 #   coords_dir: directory containing feature files (BED, GTF, bedgraph, counts)
 #   output_file: final annotated TSV path
+#   prom_window: flank size around the TSS to define a promoter, Default: 1000 bp
 
-def main(bedpe_file, coords_dir, output_file):
+def main(bedpe_file, coords_dir, output_file, prom_window=1000):
     print("Starting annotation workflow...")
     # Create directory for intermediate files
     interm_dir = make_interm_dir(output_file)
@@ -231,57 +238,51 @@ def main(bedpe_file, coords_dir, output_file):
 
         # If it's a GTF annotation, extract promoters and intersect
         elif ext == '.gtf':
-            Prom_df = gtf_to_Prom_df(coord)
-            Prom_bed = interm_dir / f"{name}_Prom.bed"
-            write_Prom_bed(Prom_df, Prom_bed)
+            prom_df = gtf_to_prom_df(coord, prom_window)
+            prom_bed = interm_dir / f"{name}_prom.bed"
+            write_prom_bed(prom_df, prom_bed)
 
             # Intersect anchors with promoter BED, keeping both sets of columns
             df = run_intersect(
-                str(anchor_bed), str(Prom_bed), ['-wa','-wb'],
-                ['chr','start','end'], ['Prom_chr','Prom_start','Prom_end','gene_name']
+                str(anchor_bed), str(prom_bed), ['-wa','-wb'],
+                ['chr','start','end'], ['prom_chr','prom_start','prom_end','gene_name']
             )
-            # Group by each anchor and collect all gene names and sort them
-            grouped = df.groupby(['chr','start','end'])['gene_name']\
-                       .apply(lambda x: sorted(set(x)))\
-                       .reset_index()
-            # Ensure start/end are integers
-            grouped['start'] = grouped['start'].astype(int)
-            grouped['end'] = grouped['end'].astype(int)
-            # Join gene names into comma-separated string. If there are no genes leave an NA
-            grouped[name] = grouped['gene_name'].apply(
-                lambda genes: ','.join(genes) if genes else pd.NA
-            )
-            # Merge promoter annotation into the general dataframe, results
+            # Drop duplicates in case the same gene is hit multiple times by one anchor
+            df = df.drop_duplicates(subset=['chr', 'start', 'end', 'gene_name'])
+
+            # Convert types
+            df['start'] = df['start'].astype(int)
+            df['end'] = df['end'].astype(int)
+
+            # Merge to results — this will create multiple rows per anchor if multiple genes match
             results = results.merge(
-                grouped[['chr','start','end', name]], on=['chr','start','end'], how='left'
+                df[['chr', 'start', 'end', 'gene_name']],
+                on=['chr', 'start', 'end'],
+                how='left'
             )
+
+            # Rename the column to the current feature name
+            results.rename(columns={'gene_name': name}, inplace=True)
 
             # If expression count files exist, map counts to each gene
             if counts_files:
                 csv_path = next(iter(counts_files.values()))
                 print(f"Mapping counts from {csv_path.name}")
                 counts_df = pd.read_csv(csv_path)
+                
+            # Identify gene column and sample columns
+            gene_col = counts_df.columns[0]
+            cond_cols = list(counts_df.columns[1:])
+            
+            # Merge all expression values at once
+            results = results.merge(counts_df, left_on=name, right_on=gene_col, how='left')
 
-                # Identify gene column and sample columns
-                gene_col = counts_df.columns[0]
-                cond_cols = list(counts_df.columns[1:])
+            # Rename columns to indicate they are gene counts
+            for cond in cond_cols:
+                results.rename(columns={cond: f"{cond}_gene_counts"}, inplace=True)
 
-                # For each condition, create a new column of counts per anchor
-                for cond in cond_cols:
-                    new_col = f"{cond}_gene_counts"
-                    print(f"  → creating column: {new_col}")
-                    # Define function to map comma-separated genes to counts
-                    def map_counts(gene_str):
-                        if pd.isna(gene_str) or gene_str == '':
-                            return pd.NA
-                        genes = gene_str.split(',')
-                        vals = []
-                        for g in genes:
-                            match = counts_df.loc[counts_df[gene_col] == g, cond]
-                            vals.append(str(match.values[0]) if not match.empty else '')
-                        return ','.join(vals)
-                    # Apply mapping to promoter annotation column
-                    results[new_col] = results[name].apply(map_counts)
+            # Optionally drop gene_col (original from counts_df)
+            results.drop(columns=[gene_col], inplace=True)
 
         # If it's a bedgraph file, compute mean signal over each anchor
         elif ext == '.bedgraph':
@@ -321,5 +322,6 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--bedpe', required=True, help='Path to input BEDPE file')
     parser.add_argument('-d', '--dir', required=True, help='Directory with coordinate files')
     parser.add_argument('-o', '--out', required=True, help='Output annotated file (tsv)')
+    parser.add_argument('-pw', '--promwindow', required=False, help='Flank size, in base pairs, around the TSS to define promoters. Default: +/- 1000')
     args = parser.parse_args()
     main(args.bedpe, args.dir, args.out)
