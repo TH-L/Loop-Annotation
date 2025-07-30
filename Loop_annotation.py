@@ -1,4 +1,4 @@
-# Loop annotation version 2.0 
+# Loop Annotation v2.0
 # This script annotates BEDPE Loop Anchors with Genomic Features.
 
 import argparse  # To parse command-line arguments 
@@ -270,19 +270,19 @@ def main(bedpe_file, coords_dir, output_file, prom_window=1000):
                 print(f"Mapping counts from {csv_path.name}")
                 counts_df = pd.read_csv(csv_path)
                 
-            # Identify gene column and sample columns
-            gene_col = counts_df.columns[0]
-            cond_cols = list(counts_df.columns[1:])
-            
-            # Merge all expression values at once
-            results = results.merge(counts_df, left_on=name, right_on=gene_col, how='left')
+                # Identify gene column and sample columns
+                gene_col = counts_df.columns[0]
+                cond_cols = list(counts_df.columns[1:])
+                
+                # Merge all expression values at once
+                results = results.merge(counts_df, left_on=name, right_on=gene_col, how='left')
 
-            # Rename columns to indicate they are gene counts
-            for cond in cond_cols:
-                results.rename(columns={cond: f"{cond}_gene_counts"}, inplace=True)
+                # Rename columns to indicate they are gene counts
+                for cond in cond_cols:
+                    results.rename(columns={cond: f"{cond}_gene_counts"}, inplace=True)
 
-            # Optionally drop gene_col (original from counts_df)
-            results.drop(columns=[gene_col], inplace=True)
+                # Optionally drop gene_col (original from counts_df)
+                results.drop(columns=[gene_col], inplace=True)
 
         # If it's a bedgraph file, compute mean signal over each anchor
         elif ext == '.bedgraph':
@@ -322,6 +322,6 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--bedpe', required=True, help='Path to input BEDPE file')
     parser.add_argument('-d', '--dir', required=True, help='Directory with coordinate files')
     parser.add_argument('-o', '--out', required=True, help='Output annotated file (tsv)')
-    parser.add_argument('-pw', '--promwindow', required=False, help='Flank size, in base pairs, around the TSS to define promoters. Default: +/- 1000')
+    parser.add_argument('-pw', '--promwindow', required=False, help='Flank size, in base pairs, around the TSS to define promoters. Default: 1000')
     args = parser.parse_args()
     main(args.bedpe, args.dir, args.out)
