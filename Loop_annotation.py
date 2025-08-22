@@ -211,102 +211,98 @@ def main(bedpe_file, coords_dir, output_file, prom_window=1000):
     counts_files = {p.name: p for p in Path(coords_dir).glob('*.counts.csv')}
     print(f"Counts CSV files: {list(counts_files.keys())}")
 
-    # Loop through each file to intersect in the coordinates directory
-    for coord in Path(coords_dir).iterdir():
-        # Skip directories
-        if not coord.is_file():
-            continue
-        # Skip COUNTS.CSVs cause they are used only if a gtf file is provided
-        if coord.suffix == '.csv' and coord.name.endswith('.counts.csv'):
-            continue
-        
-        # We decompose the name and extension of each file to treat them accordingly
-        name, ext = coord.stem, coord.suffix.lower()
-        print(f"Processing {coord.name}")
+        # --- collect & sort files so .gtf / .gtf.gz are processed last ---
+    folder = Path(coords_dir)
+    all_files = [p for p in folder.iterdir() if p.is_file()]
 
-        # If it's a BED feature file, count overlaps per anchor
-        if ext == '.bed':
-            out = interm_dir / f"{name}_count.bed"
+    # Skip counts CSVs from the list here (they are handled separately earlier)
+    all_files = [p for p in all_files if not p.name.endswith('.counts.csv')]
+
+    def full_suffix(p: Path) -> str:
+        # join all suffixes: e.g. ".gtf.gz" or ".bed"
+        return ''.join(p.suffixes).lower()
+
+    def is_gtf_file(p: Path) -> bool:
+        suf = full_suffix(p)
+        return suf.endswith('.gtf') or suf.endswith('.gtf.gz')
+
+    # helper to get filename without any recognized suffixes, e.g. "genes.gtf.gz" -> "genes"
+    def name_without_suffixes(p: Path) -> str:
+        n_suffixes = len(p.suffixes)
+        if n_suffixes:
+            # split off the suffix parts
+            return p.name.rsplit('.', n_suffixes)[0]
+        return p.name
+
+    # Sort: non-GTF first (False), GTF last (True). Within each group, sort alphabetically by filename.
+    files_sorted = sorted(all_files, key=lambda p: (is_gtf_file(p), p.name.lower()))
+
+    # iterate in the desired order
+    for coord in files_sorted:
+        print(f"Processing {coord.name}")   # debug/print to show order
+        # Recompute convenient variables used later
+        name_no_ext = name_without_suffixes(coord)
+        full_suf = full_suffix(coord)
+
+        # example of how to use full_suf to detect types:
+        if full_suf.endswith('.bed') or full_suf.endswith('.bed.gz'):
+            out = interm_dir / f"{name_no_ext}_count.bed"
             write_count_bed(anchor_bed, coord, out)
-            # Read counts and add as new column in results
             df = pd.read_csv(
                 out, sep='\t', header=None,
                 names=['chr','start','end','count'], usecols=['chr','start','end','count'],
                 dtype={'count': int}
             )
-            results[name] = df['count']
+            results[name_no_ext] = df['count']
 
-        # If it's a GTF annotation, extract promoters and intersect
-        elif ext == '.gtf':
+        elif full_suf.endswith('.gtf') or full_suf.endswith('.gtf.gz'):
             prom_df = gtf_to_prom_df(coord, prom_window)
-            prom_bed = interm_dir / f"{name}_prom.bed"
+            prom_bed = interm_dir / f"{name_no_ext}_prom.bed"
             write_prom_bed(prom_df, prom_bed)
 
-            # Intersect anchors with promoter BED, keeping both sets of columns
             df = run_intersect(
                 str(anchor_bed), str(prom_bed), ['-wa','-wb'],
                 ['chr','start','end'], ['prom_chr','prom_start','prom_end','gene_name']
             )
-            # Drop duplicates in case the same gene is hit multiple times by one anchor
             df = df.drop_duplicates(subset=['chr', 'start', 'end', 'gene_name'])
-
-            # Convert types
             df['start'] = df['start'].astype(int)
             df['end'] = df['end'].astype(int)
 
-            # Merge to results — this will create multiple rows per anchor if multiple genes match
             results = results.merge(
                 df[['chr', 'start', 'end', 'gene_name']],
                 on=['chr', 'start', 'end'],
                 how='left'
             )
+            results.rename(columns={'gene_name': name_no_ext}, inplace=True)
 
-            # Rename the column to the current feature name
-            results.rename(columns={'gene_name': name}, inplace=True)
-
-            # If expression count files exist, map counts to each gene
             if counts_files:
                 csv_path = next(iter(counts_files.values()))
                 print(f"Mapping counts from {csv_path.name}")
                 counts_df = pd.read_csv(csv_path)
-                
-                # Identify gene column and sample columns
                 gene_col = counts_df.columns[0]
                 cond_cols = list(counts_df.columns[1:])
-                
-                # Merge all expression values at once
-                results = results.merge(counts_df, left_on=name, right_on=gene_col, how='left')
-
-                # Rename columns to indicate they are gene counts
+                results = results.merge(counts_df, left_on=name_no_ext, right_on=gene_col, how='left')
                 for cond in cond_cols:
                     results.rename(columns={cond: f"{cond}_gene_counts"}, inplace=True)
-
-                # Optionally drop gene_col (original from counts_df)
                 results.drop(columns=[gene_col], inplace=True)
 
-        # If it's a bedgraph file, compute mean signal over each anchor
-        elif ext == '.bedgraph':
-            # Intersect anchors with bedgraph to collect value per overlap
+        elif full_suf.endswith('.bedgraph') or full_suf.endswith('.bedgraph.gz') or full_suf.endswith('.bg') or full_suf.endswith('.bg.gz'):
             df = run_intersect(
                 str(anchor_bed), str(coord), ['-wa','-wb'],
                 ['chr','start','end'], ['bg_chr','bg_start','bg_end','value']
             )
-            # Convert value column to numeric for averaging
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
             grouped = df.groupby(['chr','start','end'])['value'].mean().reset_index()
             grouped['start'] = grouped['start'].astype(int)
             grouped['end'] = grouped['end'].astype(int)
-            grouped[name] = grouped['value'].fillna(0)
-            bedgraph_file = interm_dir / f"{name}_average.bedGraph"
+            grouped[name_no_ext] = grouped['value'].fillna(0)
+            bedgraph_file = interm_dir / f"{name_no_ext}_average.bedGraph"
             write_average_bedgraph(grouped, bedgraph_file)
-            # Merge mean signal into results
-            results = results.merge(
-                grouped[['chr','start','end', name]], on=['chr','start','end'], how='left'
-            )
+            results = results.merge(grouped[['chr','start','end', name_no_ext]], on=['chr','start','end'], how='left')
 
         else:
-            # Skip any unsupported file types
             print(f"Skipping unsupported file: {coord.name}")
+
 
     # After processing all feature files, reconstruct per loop annotation
     df_loops = make_annotated_paired_df(results)
