@@ -105,7 +105,7 @@ def write_average_bedgraph(average_df, path):
 # defining a +/- 1kb window around transcript start sites.
 # Arguments:
 #   gtf_path: path to GTF annotation file
-#   prom_window: flank size around the TSS to define a promoter, Default: 1000 bp
+#   prom_window: flank size around the TSS to define a promoter, Default: 1500 bp
 # Returns:
 #   DataFrame with promoter coordinates and gene names
 def gtf_to_prom_df(gtf_path, prom_window):
@@ -132,17 +132,17 @@ def gtf_to_prom_df(gtf_path, prom_window):
                 key, val = parts
                 attrs[key] = val.strip('"')  # Remove surrounding quotes
             # Prefer 'gene_name' if available, otherwise use 'gene_id'
-            gene = attrs.get('gene_name') or attrs.get('gene_id')
+            gene = attrs.get('gene_id') or attrs.get('gene_name')
             try:
                 # Determine promoter window based on strand:
                 # For '+' strand, promoter initial position is 1kb (Default) upstream of transcript 'start' coordinate
                 # For '-' strand, promoter initial position is 1kb (Default) upstream of transcript 'end' coordinate
                 if cols[6] == '+':
-                    init_pos = max(0, int(cols[3]) - prom_window)
+                    init_pos = max(0, int(cols[3]) - int(prom_window))
                 else:
-                    init_pos = max(0,int(cols[4]) - prom_window)
+                    init_pos = max(0,int(cols[4]) - int(prom_window))
                 # Define promoter as +/- 1kb (Default) window
-                proms.append((cols[0], init_pos, init_pos + (prom_window*2), gene))
+                proms.append((cols[0], init_pos, init_pos + (int(prom_window)*2), gene))
             except ValueError:
                 # Skip entries with invalid coordinates
                 continue
@@ -193,9 +193,9 @@ def make_annotated_paired_df(result):
 #   bedpe_file: input BEDPE path
 #   coords_dir: directory containing feature files (BED, GTF, bedgraph, counts)
 #   output_file: final annotated TSV path
-#   prom_window: flank size around the TSS to define a promoter, Default: 1000 bp
+#   prom_window: flank size around the TSS to define a promoter, Default: 1500 bp
 
-def main(bedpe_file, coords_dir, output_file, prom_window=1000):
+def main(bedpe_file, coords_dir, output_file, prom_window=1500):
     print("Starting annotation workflow...")
     # Create directory for intermediate files
     interm_dir = make_interm_dir(output_file)
@@ -287,18 +287,73 @@ def main(bedpe_file, coords_dir, output_file, prom_window=1000):
                 results.drop(columns=[gene_col], inplace=True)
 
         elif full_suf.endswith('.bedgraph') or full_suf.endswith('.bedgraph.gz') or full_suf.endswith('.bg') or full_suf.endswith('.bg.gz'):
+            print(f"Computing weighted average signal for {coord.name}")
+
+            # Use -wao to retain overlap length information
             df = run_intersect(
-                str(anchor_bed), str(coord), ['-wa','-wb'],
-                ['chr','start','end'], ['bg_chr','bg_start','bg_end','value']
+                str(anchor_bed),
+                str(coord),
+                ['-wao'],
+                ['chr', 'start', 'end'],
+                ['bg_chr', 'bg_start', 'bg_end', 'value', 'overlap_bp']
             )
-            df['value'] = pd.to_numeric(df['value'], errors='coerce')
-            grouped = df.groupby(['chr','start','end'])['value'].mean().reset_index()
-            grouped['start'] = grouped['start'].astype(int)
-            grouped['end'] = grouped['end'].astype(int)
-            grouped[name_no_ext] = grouped['value'].fillna(0)
-            bedgraph_file = interm_dir / f"{name_no_ext}_average.bedGraph"
-            write_average_bedgraph(grouped, bedgraph_file)
-            results = results.merge(grouped[['chr','start','end', name_no_ext]], on=['chr','start','end'], how='left')
+
+            # Convert numeric columns
+            df['start'] = pd.to_numeric(df['start'], errors='coerce')
+            df['end'] = pd.to_numeric(df['end'], errors='coerce')
+
+            df['bg_start'] = pd.to_numeric(df['bg_start'], errors='coerce')
+            df['bg_end'] = pd.to_numeric(df['bg_end'], errors='coerce')
+
+            df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0)
+
+            df['overlap_bp'] = pd.to_numeric(
+                df['overlap_bp'],
+                errors='coerce'
+            ).fillna(0)
+
+            # Calculate anchor length
+            df['anchor_length'] = df['end'] - df['start']
+
+            # Weighted contribution
+            df['weighted_signal'] = df['value'] * df['overlap_bp']
+
+            # Sum weighted signal per anchor
+            grouped = (
+                df.groupby(['chr', 'start', 'end'], as_index=False)
+                .agg({
+                    'weighted_signal': 'sum',
+                    'anchor_length': 'first'
+                })
+            )
+
+            # Compute weighted mean signal
+            grouped[name_no_ext] = (
+                grouped['weighted_signal'] /
+                grouped['anchor_length']
+            )
+
+            # Replace NaN with 0
+            grouped[name_no_ext] = (
+                grouped[name_no_ext]
+                .replace([float('inf'), -float('inf')], 0)
+                .fillna(0)
+            )
+
+            # Save intermediate bedGraph
+            bedgraph_file = interm_dir / f"{name_no_ext}_weighted_average.bedGraph"
+
+            export_df = grouped.copy()
+            export_df['value'] = export_df[name_no_ext]
+
+            write_average_bedgraph(export_df, bedgraph_file)
+
+            # Merge back into results
+            results = results.merge(
+                grouped[['chr', 'start', 'end', name_no_ext]],
+                on=['chr', 'start', 'end'],
+                how='left'
+            )
 
         else:
             print(f"Skipping unsupported file: {coord.name}")
@@ -320,4 +375,4 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--out', required=True, help='Output annotated file (tsv)')
     parser.add_argument('-pw', '--promwindow', required=False, help='Flank size, in base pairs, around the TSS to define promoters. Default: 1000')
     args = parser.parse_args()
-    main(args.bedpe, args.dir, args.out)
+    main(args.bedpe, args.dir, args.out, args.promwindow)
